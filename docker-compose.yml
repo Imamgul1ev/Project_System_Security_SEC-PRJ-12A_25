@@ -1,0 +1,55 @@
+# Edge-Cloud secure storage - SEC-PRJ-12A_25
+#
+#   docker compose up -d cloud          start the cloud storage service
+#   docker compose run --rm edge        normal flow on the (arm64) edge device
+#   docker compose run --rm attacks     run the 3 attack simulations
+#   docker compose down                 stop everything
+
+services:
+  cloud:
+    build: ./cloud
+    environment:
+      - PORT=5000
+      - RATE_LIMIT=20
+      - RATE_WINDOW=10
+    volumes:
+      - ./cloud/keys:/app/keys:ro        # only the edge's PUBLIC signing key
+      - ./cloud/storage:/app/storage     # encrypted packages
+    ports:
+      - "5001:5000"   # host port 5001 (macOS uses 5000 for AirPlay)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  edge:
+    build: ./edge
+    platform: ${EDGE_PLATFORM:-linux/arm64}   # emulate a Raspberry Pi (ARM64) MPU
+    environment:
+      - CLOUD_URL=http://cloud:5000
+    volumes:
+      - ./edge/keys:/app/keys:ro         # private keys stay on the edge
+      - ./edge/state:/app/state          # local version counters
+      - ./edge/data:/app/data:ro         # the real CSV files to protect
+    depends_on:
+      cloud:
+        condition: service_healthy
+
+  attacks:
+    build: ./edge
+    platform: ${EDGE_PLATFORM:-linux/arm64}
+    command: ["python", "attacks.py"]
+    environment:
+      - CLOUD_URL=http://cloud:5000
+      - BREACHED_STORAGE=/breached_storage
+      - RATE_WINDOW=10
+    volumes:
+      - ./edge/keys:/app/keys:ro
+      - ./edge/state:/app/state
+      - ./edge/data:/app/data:ro
+      - ./cloud/storage:/breached_storage   # simulates an attacker who breached the cloud disk
+    depends_on:
+      cloud:
+        condition: service_healthy
+    profiles: ["attacks"]
